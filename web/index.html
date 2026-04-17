@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inkwell</title>
+  <link rel="stylesheet" href="https://unpkg.com/@knadh/oat/oat.min.css" />
+  <style>
+    body { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+
+    h1 { margin-bottom: 0.25rem; }
+    h1 span { font-weight: 300; color: var(--fg-subtle, #888); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    @media (max-width: 700px) { .layout { grid-template-columns: 1fr; } }
+
+    .pane { display: flex; flex-direction: column; gap: 0.75rem; }
+    .pane h2 { margin: 0; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    textarea {
+      flex: 1;
+      min-height: 260px;
+      resize: vertical;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    #output {
+      min-height: 260px;
+      padding: 0.75rem;
+      border: 1px solid var(--border, #ddd);
+      border-radius: 4px;
+      white-space: pre-wrap;
+      font-family: inherit;
+      color: var(--fg-subtle, #555);
+    }
+    #output:empty::before { content: "Revised text will appear here…"; opacity: 0.4; }
+
+    .controls { display: flex; gap: 0.75rem; align-items: flex-end; }
+    .controls input { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>Inkwell <span>/ writing assistant</span></h1>
+
+  <div class="layout">
+    <div class="pane">
+      <h2>Your draft</h2>
+      <textarea id="content" placeholder="Paste or write your draft here…"></textarea>
+      <div class="controls">
+        <input id="prompt" type="text" placeholder="How should I improve this?" />
+        <button id="submit">Improve</button>
+      </div>
+    </div>
+
+    <div class="pane">
+      <h2>Revised</h2>
+      <div id="output" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

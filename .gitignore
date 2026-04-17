@@ -1,0 +1,7 @@
+inkwell
+*.db
+.env
+data/
+.claude/settings.local.json
+articles/
+.idea/
