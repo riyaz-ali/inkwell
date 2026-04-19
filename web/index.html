@@ -30,6 +30,32 @@
       box-sizing: border-box;
     }
 
+    /* Writing mode selector */
+    .modes {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .modes label {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.3rem 0.75rem;
+      border: 1px solid var(--border, #ddd);
+      border-radius: 999px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .modes input[type="radio"] { display: none; }
+    .modes input[type="radio"]:checked + span {
+      font-weight: 600;
+    }
+    .modes label:has(input:checked) {
+      border-color: var(--accent, #6b8afd);
+      background: color-mix(in srgb, var(--accent, #6b8afd) 10%, transparent);
+    }
+
     #thread {
       display: flex;
       flex-direction: column;
@@ -48,12 +74,25 @@
     }
 
     .turn { display: flex; flex-direction: column; gap: 0.25rem; }
-    .turn .prompt {
+    .turn .meta {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
       font-size: 0.85rem;
       color: var(--fg-subtle, #666);
-      font-style: italic;
     }
-    .turn .prompt::before { content: "› "; opacity: 0.5; }
+    .turn .meta .prompt { font-style: italic; }
+    .turn .meta .prompt::before { content: "› "; opacity: 0.5; }
+    .turn .meta .mode-badge {
+      font-size: 0.72rem;
+      font-style: normal;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid var(--accent, #6b8afd);
+      color: var(--accent, #6b8afd);
+      text-transform: capitalize;
+      white-space: nowrap;
+    }
     .turn .completion {
       white-space: pre-wrap;
       padding: 0.5rem 0.75rem;
@@ -75,6 +114,22 @@
     <div class="pane">
       <h2>Your draft</h2>
       <textarea id="content" placeholder="Paste or write your draft here…"></textarea>
+
+      <div class="modes" role="group" aria-label="Writing mode">
+        <label>
+          <input type="radio" name="mode" value="academic" checked />
+          <span>Academic</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="journalist" />
+          <span>Journalist</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="engineer" />
+          <span>Engineer</span>
+        </label>
+      </div>
+
       <div class="controls">
         <input id="prompt" type="text" placeholder="How should I improve this?" />
         <button id="submit">Improve</button>
