@@ -41,9 +41,10 @@ inkwell/
 │   │   ├── schema.go                # embed.FS loader + Apply(conn)
 │   │   └── v<N>.sql                 # one file per version (v1.sql, v2.sql, …)
 │   ├── domain/
-│   │   └── draft.go                 # Draft struct + colocated tools.sql queries
-│   ├── completion/
-│   │   └── completion.go            # POST /api/complete handler
+│   │   ├── draft.go                 # Draft struct + colocated tools.sql queries
+│   │   └── revision.go              # Revision struct + colocated queries (article 3)
+│   ├── drafts/
+│   │   └── drafts.go                # /api/drafts + /api/drafts/{id}/revisions
 │   └── util/
 │       └── http.go                  # generic HandlerFunc[I,O]
 └── web/                             # static frontend (oat.js + vanilla JS)

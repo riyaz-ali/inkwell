@@ -1,8 +1,8 @@
 // Command inkwell is the HTTP server backing the Inkwell writing assistant.
 //
 // It wires configuration, a SQLite connection pool, the Anthropic client, and
-// a chi-based HTTP router, then serves the embedded /web/ frontend plus the
-// /api/complete endpoint.
+// a chi-based HTTP router, then serves the /web/ frontend plus the /api/drafts
+// endpoints.
 package main
 
 import (
@@ -23,8 +23,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/riyaz-ali/inkwell/internal/completion"
 	"github.com/riyaz-ali/inkwell/internal/config"
+	"github.com/riyaz-ali/inkwell/internal/drafts"
 	"github.com/riyaz-ali/inkwell/internal/schema"
 )
 
@@ -80,7 +80,9 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(stock.RequestID, stock.Recoverer, injectLogger(&logger))
 
-	r.Method(http.MethodPost, "/api/complete", completion.Complete(pool, &ai))
+	r.Method(http.MethodPost, "/api/drafts", drafts.Create(pool))
+	r.Method(http.MethodGet, "/api/drafts/{id}", drafts.Get(pool))
+	r.Method(http.MethodPost, "/api/drafts/{id}/revisions", drafts.Revise(pool, &ai))
 	r.Handle("/*", http.FileServer(http.Dir(cfg.WebDir)))
 
 	srv := &http.Server{
