@@ -7,7 +7,6 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.37.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/pkg/errors v0.9.1
-	github.com/riyaz-ali/tools.sql v0.0.0-20260417190427-0ebe1d33da35
 	github.com/rs/zerolog v1.35.0
 )
 
@@ -21,3 +20,5 @@ require (
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 )
+
+replace crawshaw.io/sqlite v0.3.2 => github.com/riyaz-ali/sqlite3 v0.0.0-20260419095645-3149ee2dcca5

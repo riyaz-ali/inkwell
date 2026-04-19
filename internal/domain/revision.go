@@ -2,7 +2,7 @@ package domain
 
 import (
 	"crawshaw.io/sqlite"
-	tools "github.com/riyaz-ali/tools.sql"
+	"crawshaw.io/sqlite/sqlitex/orm"
 )
 
 // Revision is a single turn in a draft's revision history: the user's prompt
@@ -16,8 +16,8 @@ type Revision struct {
 }
 
 // InsertRevision appends a new revision to a draft's history.
-func InsertRevision(r *Revision) tools.I[Revision, *Revision] {
-	return tools.I[Revision, *Revision]{
+func InsertRevision(r *Revision) orm.I[Revision, *Revision] {
+	return orm.I[Revision, *Revision]{
 		QueryStr: `INSERT INTO revisions (draft_id, prompt, completion)
 		           VALUES (?, ?, ?)
 		           RETURNING id, draft_id, prompt, completion`,
@@ -29,7 +29,7 @@ func InsertRevision(r *Revision) tools.I[Revision, *Revision] {
 			return nil
 		},
 		Val: func(stmt *sqlite.Stmt) (*Revision, error) {
-			return tools.ScanAs[Revision](stmt)
+			return orm.ScanAs[Revision](stmt)
 		},
 	}
 }
@@ -37,8 +37,8 @@ func InsertRevision(r *Revision) tools.I[Revision, *Revision] {
 // ListRevisionsForDraft returns every revision attached to a draft, in the
 // order they were created. This ordering is what the handler replays as
 // alternating user/assistant messages when building the Claude request.
-func ListRevisionsForDraft(draftID int) tools.Q[Revision] {
-	return tools.Q[Revision]{
+func ListRevisionsForDraft(draftID int) orm.Q[Revision] {
+	return orm.Q[Revision]{
 		QueryStr: `SELECT id, draft_id, prompt, completion
 		           FROM revisions
 		           WHERE draft_id = ?
@@ -48,7 +48,7 @@ func ListRevisionsForDraft(draftID int) tools.Q[Revision] {
 			return nil
 		},
 		Val: func(stmt *sqlite.Stmt) (*Revision, error) {
-			return tools.ScanAs[Revision](stmt)
+			return orm.ScanAs[Revision](stmt)
 		},
 	}
 }

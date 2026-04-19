@@ -20,10 +20,10 @@ import (
 	"strconv"
 
 	"crawshaw.io/sqlite/sqlitex"
+	"crawshaw.io/sqlite/sqlitex/orm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/pkg/errors"
-	tools "github.com/riyaz-ali/tools.sql"
 	"github.com/rs/zerolog"
 
 	"github.com/riyaz-ali/inkwell/internal/domain"
@@ -57,7 +57,7 @@ func Create(pool *sqlitex.Pool) util.HandlerFunc[CreateRequest, CreateResponse] 
 		conn := pool.Get(ctx)
 		defer pool.Put(conn)
 
-		rows, err := tools.Exec(conn, domain.InsertDraft(req.Content))
+		rows, err := orm.Exec(conn, domain.InsertDraft(req.Content))
 		if err != nil {
 			return nil, errors.Wrap(err, "create draft")
 		}
@@ -91,7 +91,7 @@ func Get(pool *sqlitex.Pool) http.HandlerFunc {
 		conn := pool.Get(ctx)
 		defer pool.Put(conn)
 
-		draft, err := tools.FetchOne(conn, domain.GetDraftByID(int64(id)))
+		draft, err := orm.FetchOne(conn, domain.GetDraftByID(int64(id)))
 		if err != nil {
 			log.Error().Err(err).Send()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -102,7 +102,7 @@ func Get(pool *sqlitex.Pool) http.HandlerFunc {
 			return
 		}
 
-		revisions, err := tools.FetchMany(conn, domain.ListRevisionsForDraft(id))
+		revisions, err := orm.FetchMany(conn, domain.ListRevisionsForDraft(id))
 		if err != nil {
 			log.Error().Err(err).Send()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -174,7 +174,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 	conn := pool.Get(ctx)
 	defer pool.Put(conn)
 
-	draft, err := tools.FetchOne(conn, domain.GetDraftByID(int64(draftID)))
+	draft, err := orm.FetchOne(conn, domain.GetDraftByID(int64(draftID)))
 	if err != nil {
 		return nil, errors.Wrap(err, "fetch draft")
 	}
@@ -182,7 +182,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 		return nil, errors.New("draft not found")
 	}
 
-	history, err := tools.FetchMany(conn, domain.ListRevisionsForDraft(draftID))
+	history, err := orm.FetchMany(conn, domain.ListRevisionsForDraft(draftID))
 	if err != nil {
 		return nil, errors.Wrap(err, "load history")
 	}
@@ -204,7 +204,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 
 	completion := msg.Content[0].Text
 
-	rows, err := tools.Exec(conn, domain.InsertRevision(&domain.Revision{
+	rows, err := orm.Exec(conn, domain.InsertRevision(&domain.Revision{
 		DraftID:    draftID,
 		Prompt:     req.Prompt,
 		Completion: completion,

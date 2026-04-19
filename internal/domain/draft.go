@@ -5,7 +5,7 @@ package domain
 
 import (
 	"crawshaw.io/sqlite"
-	tools "github.com/riyaz-ali/tools.sql"
+	"crawshaw.io/sqlite/sqlitex/orm"
 )
 
 // Draft is a single saved piece of text — the output of a completion request,
@@ -16,8 +16,8 @@ type Draft struct {
 }
 
 // InsertDraft inserts a new row into drafts and returns the stored value.
-func InsertDraft(content string) tools.I[Draft, string] {
-	return tools.I[Draft, string]{
+func InsertDraft(content string) orm.I[Draft, string] {
+	return orm.I[Draft, string]{
 		QueryStr: `INSERT INTO drafts (content) VALUES (?) RETURNING id, content`,
 		ArgSet:   []string{content},
 		Bind: func(stmt *sqlite.Stmt, s string) error {
@@ -25,21 +25,21 @@ func InsertDraft(content string) tools.I[Draft, string] {
 			return nil
 		},
 		Val: func(stmt *sqlite.Stmt) (*Draft, error) {
-			return tools.ScanAs[Draft](stmt)
+			return orm.ScanAs[Draft](stmt)
 		},
 	}
 }
 
 // GetDraftByID fetches a single draft by its primary key, or nil if not found.
-func GetDraftByID(id int64) tools.Q[Draft] {
-	return tools.Q[Draft]{
+func GetDraftByID(id int64) orm.Q[Draft] {
+	return orm.Q[Draft]{
 		QueryStr: `SELECT id, content FROM drafts WHERE id = ?`,
 		Bind: func(stmt *sqlite.Stmt) error {
 			stmt.BindInt64(1, id)
 			return nil
 		},
 		Val: func(stmt *sqlite.Stmt) (*Draft, error) {
-			return tools.ScanAs[Draft](stmt)
+			return orm.ScanAs[Draft](stmt)
 		},
 	}
 }
