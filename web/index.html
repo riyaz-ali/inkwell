@@ -5,144 +5,67 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Inkwell</title>
   <link rel="stylesheet" href="https://unpkg.com/@knadh/oat/oat.min.css" />
-  <style>
-    body { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
-
-    h1 { margin-bottom: 0.25rem; }
-    h1 span { font-weight: 300; color: var(--fg-subtle, #888); }
-
-    .layout {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-      margin-top: 1.5rem;
-    }
-    @media (max-width: 700px) { .layout { grid-template-columns: 1fr; } }
-
-    .pane { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; }
-    .pane h2 { margin: 0; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
-
-    textarea {
-      flex: 1;
-      min-height: 260px;
-      resize: vertical;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    /* Writing mode selector */
-    .modes {
-      display: flex;
-      gap: 0.5rem;
-    }
-    .modes label {
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.3rem 0.75rem;
-      border: 1px solid var(--border, #ddd);
-      border-radius: 999px;
-      font-size: 0.85rem;
-      cursor: pointer;
-      user-select: none;
-      transition: background 0.1s, border-color 0.1s;
-    }
-    .modes input[type="radio"] { display: none; }
-    .modes input[type="radio"]:checked + span {
-      font-weight: 600;
-    }
-    .modes label:has(input:checked) {
-      border-color: var(--accent, #6b8afd);
-      background: color-mix(in srgb, var(--accent, #6b8afd) 10%, transparent);
-    }
-
-    #thread {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-      min-height: 260px;
-      max-height: 60vh;
-      overflow-y: auto;
-      padding: 0.75rem;
-      border: 1px solid var(--border, #ddd);
-      border-radius: 4px;
-      background: var(--bg-subtle, #fafafa);
-    }
-    #thread:empty::before {
-      content: "Revisions will appear here as you request them…";
-      opacity: 0.4;
-    }
-
-    .turn { display: flex; flex-direction: column; gap: 0.25rem; }
-    .turn .meta {
-      display: flex;
-      align-items: baseline;
-      gap: 0.5rem;
-      font-size: 0.85rem;
-      color: var(--fg-subtle, #666);
-    }
-    .turn .meta .prompt { font-style: italic; }
-    .turn .meta .prompt::before { content: "› "; opacity: 0.5; }
-    .turn .meta .mode-badge {
-      font-size: 0.72rem;
-      font-style: normal;
-      padding: 0.1rem 0.45rem;
-      border-radius: 999px;
-      border: 1px solid var(--accent, #6b8afd);
-      color: var(--accent, #6b8afd);
-      text-transform: capitalize;
-      white-space: nowrap;
-    }
-    .turn .completion {
-      white-space: pre-wrap;
-      padding: 0.5rem 0.75rem;
-      border-left: 2px solid var(--accent, #6b8afd);
-      background: var(--bg, #fff);
-    }
-
-    .controls { display: flex; gap: 0.75rem; align-items: flex-end; }
-    .controls input { flex: 1; }
-
-    .status { font-size: 0.85rem; color: var(--fg-subtle, #888); min-height: 1.2em; }
-    .status.error { color: var(--error, #c33); }
-  </style>
+  <link rel="stylesheet" href="style.css" />
+  <script defer src="app.js"></script>
+  <script defer src="https://unpkg.com/alpinejs@3/dist/cdn.min.js"></script>
 </head>
-<body>
+<body x-data="inkwell">
   <h1>Inkwell <span>/ writing assistant</span></h1>
 
   <div class="layout">
     <div class="pane">
       <h2>Your draft</h2>
-      <textarea id="content" placeholder="Paste or write your draft here…"></textarea>
+      <textarea
+        x-model="content"
+        :disabled="locked || busy"
+        placeholder="Paste or write your draft here…"
+      ></textarea>
 
       <div class="modes" role="group" aria-label="Writing mode">
         <label>
-          <input type="radio" name="mode" value="academic" checked />
+          <input type="radio" x-model="mode" value="academic" />
           <span>Academic</span>
         </label>
         <label>
-          <input type="radio" name="mode" value="journalist" />
+          <input type="radio" x-model="mode" value="journalist" />
           <span>Journalist</span>
         </label>
         <label>
-          <input type="radio" name="mode" value="engineer" />
+          <input type="radio" x-model="mode" value="engineer" />
           <span>Engineer</span>
         </label>
       </div>
 
       <div class="controls">
-        <input id="prompt" type="text" placeholder="How should I improve this?" />
-        <button id="submit">Improve</button>
+        <input
+          x-model="prompt"
+          type="text"
+          placeholder="How should I improve this?"
+          :disabled="busy"
+          @keydown.enter="submit"
+        />
+        <button @click="submit" :disabled="busy" x-text="busy ? 'Thinking…' : 'Improve'"></button>
       </div>
-      <div id="status" class="status" aria-live="polite"></div>
+      <div class="status" :class="{ error: isError }" x-text="status" aria-live="polite"></div>
     </div>
 
     <div class="pane">
       <h2>Revisions</h2>
-      <div id="thread" aria-live="polite"></div>
+      <div id="thread" aria-live="polite">
+        <p class="thread-empty" x-show="thread.length === 0">
+          Revisions will appear here as you request them…
+        </p>
+        <template x-for="turn in thread" :key="turn.turn">
+          <div class="turn">
+            <div class="meta">
+              <span class="prompt" x-text="`Turn ${turn.turn}: ${turn.prompt}`"></span>
+              <span class="mode-badge" x-text="turn.mode"></span>
+            </div>
+            <div class="completion" x-text="turn.completion"></div>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
-
-  <script src="app.js"></script>
 </body>
 </html>
