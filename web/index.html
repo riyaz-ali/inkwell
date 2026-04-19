@@ -6,6 +6,14 @@
   <title>Inkwell</title>
   <link rel="stylesheet" href="https://unpkg.com/@knadh/oat/oat.min.css" />
   <link rel="stylesheet" href="style.css" />
+  <!--
+    Script order matters:
+    - app.js loads first to register Alpine.data('inkwell', …) on the
+      alpine:init event.
+    - alpine.js loads second and fires alpine:init during its own startup.
+    Both must be `defer` so they run after <body> is parsed; without defer,
+    Alpine tries to init during <head> parsing and bails out.
+  -->
   <script defer src="app.js"></script>
   <script defer src="https://unpkg.com/alpinejs@3/dist/cdn.min.js"></script>
 </head>
