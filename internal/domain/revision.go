@@ -5,27 +5,30 @@ import (
 	"crawshaw.io/sqlite/sqlitex/orm"
 )
 
-// Revision is a single turn in a draft's revision history: the user's prompt
-// and the assistant's reply. Replaying all revisions of a draft in order
-// reconstructs the full conversation sent to the model on the next turn.
+// Revision is a single turn in a draft's revision history: the user's prompt,
+// the writing mode that shaped the system prompt, and the assistant's reply.
+// Replaying all revisions of a draft in order reconstructs the full
+// conversation sent to the model on the next turn.
 type Revision struct {
 	ID         int    `db:"id"`
 	DraftID    int    `db:"draft_id"`
 	Prompt     string `db:"prompt"`
 	Completion string `db:"completion"`
+	Mode       string `db:"mode"`
 }
 
 // InsertRevision appends a new revision to a draft's history.
 func InsertRevision(r *Revision) orm.I[Revision, *Revision] {
 	return orm.I[Revision, *Revision]{
-		QueryStr: `INSERT INTO revisions (draft_id, prompt, completion)
-		           VALUES (?, ?, ?)
-		           RETURNING id, draft_id, prompt, completion`,
+		QueryStr: `INSERT INTO revisions (draft_id, prompt, completion, mode)
+		           VALUES (?, ?, ?, ?)
+		           RETURNING id, draft_id, prompt, completion, mode`,
 		ArgSet: []*Revision{r},
 		Bind: func(stmt *sqlite.Stmt, r *Revision) error {
 			stmt.BindInt64(1, int64(r.DraftID))
 			stmt.BindText(2, r.Prompt)
 			stmt.BindText(3, r.Completion)
+			stmt.BindText(4, r.Mode)
 			return nil
 		},
 		Val: func(stmt *sqlite.Stmt) (*Revision, error) {
@@ -39,7 +42,7 @@ func InsertRevision(r *Revision) orm.I[Revision, *Revision] {
 // alternating user/assistant messages when building the Claude request.
 func ListRevisionsForDraft(draftID int) orm.Q[Revision] {
 	return orm.Q[Revision]{
-		QueryStr: `SELECT id, draft_id, prompt, completion
+		QueryStr: `SELECT id, draft_id, prompt, completion, mode
 		           FROM revisions
 		           WHERE draft_id = ?
 		           ORDER BY id ASC`,

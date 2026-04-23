@@ -1,16 +1,10 @@
-// Package drafts implements the draft and revision HTTP endpoints — the
-// multi-turn revision flow introduced in article 3.
+// Package drafts implements the draft and revision HTTP endpoints.
 //
 // The endpoints:
 //
 //	POST /api/drafts                   create a draft
 //	GET  /api/drafts/{id}              fetch a draft + its revisions
 //	POST /api/drafts/{id}/revisions    append a revision turn
-//
-// Each revision turn replays the full prior conversation (the draft's initial
-// content plus every earlier revision) as alternating user/assistant messages,
-// then appends the new user prompt. The messages array is the model's only
-// memory — this package is a small demonstration of that fact.
 package drafts
 
 import (
@@ -30,7 +24,45 @@ import (
 	"github.com/riyaz-ali/inkwell/internal/util"
 )
 
-const systemPrompt = "You are a writing assistant. Help the user improve their draft. Return only the revised text — no preamble, no explanations."
+// systemPrompts maps each writing mode to a system prompt that shapes how
+// Claude approaches the revision. The key is the mode identifier sent by the
+// client; the value is the full instruction given to the model as its role.
+//
+// All prompts share the same terminal instruction — return only the revised
+// text — so the frontend can display the completion directly without stripping
+// preamble. What differs is the editorial lens the model applies.
+var systemPrompts = map[string]string{
+	"academic": "You are an academic writing assistant. " +
+		"Revise the draft with scholarly rigour: use a formal register, " +
+		"precise domain vocabulary, and a clear argument structure. " +
+		"Favour complex sentences where they add clarity, not obscurity. " +
+		"Return only the revised text — no preamble, no explanations.",
+
+	"journalist": "You are a seasoned copy editor at a national newspaper. " +
+		"Revise the draft for maximum clarity and reader impact: " +
+		"active voice, tight sentences, a strong opening that earns the reader's attention. " +
+		"Cut jargon; keep every word accountable. " +
+		"Return only the revised text — no preamble, no explanations.",
+
+	"engineer": "You are a technical writing editor. " +
+		"Revise the draft for precision and usability: " +
+		"concrete examples over abstractions, consistent terminology, " +
+		"structured prose that scans well (short paragraphs, lists where helpful). " +
+		"Define any term that a competent engineer outside the domain might not know. " +
+		"Return only the revised text — no preamble, no explanations.",
+}
+
+// defaultMode is used when the client sends an unrecognised or empty mode.
+const defaultMode = "academic"
+
+// resolveSystemPrompt returns the system prompt for the requested mode,
+// falling back to the default if the mode is unrecognised.
+func resolveSystemPrompt(mode string) (string, string) {
+	if p, ok := systemPrompts[mode]; ok {
+		return mode, p
+	}
+	return defaultMode, systemPrompts[defaultMode]
+}
 
 // ---------- POST /api/drafts ----------
 
@@ -119,18 +151,21 @@ func Get(pool *sqlitex.Pool) http.HandlerFunc {
 // ReviseRequest is the JSON body accepted by POST /api/drafts/{id}/revisions.
 type ReviseRequest struct {
 	Prompt string `json:"prompt"`
+	Mode   string `json:"mode"` // "academic" | "journalist" | "engineer"
 }
 
 // ReviseResponse is the JSON body returned by POST /api/drafts/{id}/revisions.
 type ReviseResponse struct {
 	RevisionID int    `json:"revision_id"`
 	Completion string `json:"completion"`
+	Mode       string `json:"mode"`
 	Turn       int    `json:"turn"`
 }
 
 // Revise adds a new turn to a draft's revision history. It loads the draft
 // and every prior revision, replays them as a conversation, appends the new
-// user prompt, calls Claude, and saves the assistant's reply as a revision.
+// user prompt, calls Claude with the mode's system prompt, and saves the
+// assistant's reply as a revision.
 func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -171,6 +206,11 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 		return nil, errors.New("prompt is required")
 	}
 
+	// Resolve the mode to its system prompt. An unrecognised mode falls back
+	// to the default rather than returning an error — this keeps the API
+	// lenient and ensures a stale client still gets a sensible response.
+	mode, sysPrompt := resolveSystemPrompt(req.Mode)
+
 	conn := pool.Get(ctx)
 	defer pool.Put(conn)
 
@@ -192,7 +232,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 	msg, err := ai.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaudeHaiku4_5,
 		MaxTokens: 1024,
-		System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
+		System:    []anthropic.TextBlockParam{{Text: sysPrompt}},
 		Messages:  messages,
 	})
 	if err != nil {
@@ -208,6 +248,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 		DraftID:    draftID,
 		Prompt:     req.Prompt,
 		Completion: completion,
+		Mode:       mode,
 	}))
 	if err != nil {
 		return nil, errors.Wrap(err, "save revision")
@@ -218,6 +259,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 		Int("draft_id", draftID).
 		Int("revision_id", rows[0].ID).
 		Int("turn", turn).
+		Str("mode", mode).
 		Int("tokens_in", int(msg.Usage.InputTokens)).
 		Int("tokens_out", int(msg.Usage.OutputTokens)).
 		Msg("revision saved")
@@ -225,6 +267,7 @@ func revise(ctx context.Context, pool *sqlitex.Pool, ai *anthropic.Client, draft
 	return &ReviseResponse{
 		RevisionID: rows[0].ID,
 		Completion: completion,
+		Mode:       mode,
 		Turn:       turn,
 	}, nil
 }
