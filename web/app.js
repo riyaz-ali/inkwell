@@ -60,14 +60,21 @@ document.addEventListener('alpine:init', () => {
         // Push a placeholder turn into the thread so the user sees a target
         // for the streaming text to land in. We update its fields in place
         // as the stream produces deltas — Alpine's reactivity does the rest.
-        const turn = {
+        //
+        // Subtlety: Alpine 3 (via @vue/reactivity) wraps array elements in a
+        // Proxy lazily, on read. The raw object we just pushed has no proxy,
+        // so mutating the local `turn` variable would update memory without
+        // tripping the proxy's set trap — and the x-text binding would
+        // never re-render. We re-acquire the proxied reference from the
+        // array before handing it to the streamer.
+        const idx = this.thread.push({
           turn:       this.thread.length + 1, // optimistic; corrected on `done`
           prompt:     prompt,
           mode:       this.mode,
           completion: '',
           streaming:  true,
-        };
-        this.thread.push(turn);
+        }) - 1;
+        const turn = this.thread[idx]; // proxied reference
         this.prompt = '';
 
         // Open the EventSource and stream into the placeholder turn.
