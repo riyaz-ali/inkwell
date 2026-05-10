@@ -2,14 +2,20 @@
 //
 // The endpoints:
 //
-//	POST /api/drafts                   create a draft
-//	GET  /api/drafts/{id}              fetch a draft + its revisions
-//	POST /api/drafts/{id}/revisions    append a revision turn (streams SSE)
+//	POST /api/drafts                           create a draft
+//	GET  /api/drafts/{id}                      fetch a draft + its revisions
+//	POST /api/drafts/{id}/revisions            stage a revision (returns ticket)
+//	GET  /api/drafts/{id}/revisions/stream     stream the staged revision (SSE)
 //
-// Article 5 turns the revision endpoint into a streaming response. Instead of
-// blocking until Claude finishes, the handler relays each text chunk as a
-// Server-Sent Event the moment the SDK surfaces it, then emits a final
-// `done` event carrying the persisted revision metadata.
+// Article 5 splits the revision flow into two requests so the browser's
+// native EventSource client can be used for streaming. The POST validates
+// inputs, stages the operation in an in-memory ticket store, and returns
+// an opaque one-shot ticket. The GET consumes the ticket, runs the model
+// call, and streams Server-Sent Events: a `delta` per text chunk, a final
+// `done`, or a `failure` if anything goes wrong after streaming has started.
+//
+// (The application error event is named `failure` rather than `error` to
+// avoid colliding with EventSource's built-in connection-error event.)
 package drafts
 
 import (
@@ -18,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"crawshaw.io/sqlite/sqlitex"
 	"crawshaw.io/sqlite/sqlitex/orm"
@@ -29,6 +36,12 @@ import (
 	"github.com/riyaz-ali/inkwell/internal/domain"
 	"github.com/riyaz-ali/inkwell/internal/util"
 )
+
+// ticketTTL bounds how long a staged revision can sit before its ticket
+// expires. Five minutes is comfortably longer than any realistic gap between
+// the POST and the EventSource opening, and short enough that abandoned
+// tickets don't accumulate.
+const ticketTTL = 5 * time.Minute
 
 // systemPrompts maps each writing mode to a system prompt that shapes how
 // Claude approaches the revision. The key is the mode identifier sent by the
@@ -69,6 +82,17 @@ func resolveSystemPrompt(mode string) (string, string) {
 	}
 	return defaultMode, systemPrompts[defaultMode]
 }
+
+// NewTicketStore exposes the package-private store constructor so the main
+// binary can own the store's lifetime without leaking internals.
+func NewTicketStore() *TicketStore { return &TicketStore{inner: newTicketStore(ticketTTL)} }
+
+// TicketStore is an opaque wrapper around the package-private store. The main
+// binary holds one of these and passes it to the stage and stream handlers.
+type TicketStore struct{ inner *ticketStore }
+
+// Close stops the store's background goroutine.
+func (s *TicketStore) Close() { s.inner.Close() }
 
 // ---------- POST /api/drafts ----------
 
@@ -154,32 +178,24 @@ func Get(pool *sqlitex.Pool) http.HandlerFunc {
 
 // ---------- POST /api/drafts/{id}/revisions ----------
 
-// ReviseRequest is the JSON body accepted by POST /api/drafts/{id}/revisions.
-type ReviseRequest struct {
+// StageRequest is the JSON body accepted by POST /api/drafts/{id}/revisions.
+type StageRequest struct {
 	Prompt string `json:"prompt"`
 	Mode   string `json:"mode"` // "academic" | "journalist" | "engineer"
 }
 
-// DonePayload is the body of the terminal `done` SSE event. It carries the
-// metadata the client needs to finalise the streamed turn — the assigned
-// revision id, the resolved mode, and the turn number.
-type DonePayload struct {
-	RevisionID int    `json:"revision_id"`
-	Mode       string `json:"mode"`
-	Turn       int    `json:"turn"`
+// StageResponse is the JSON body returned by POST /api/drafts/{id}/revisions.
+// The ticket is fed back into the GET stream URL by the client.
+type StageResponse struct {
+	Ticket string `json:"ticket"`
 }
 
-// Revise streams a new revision turn as a sequence of Server-Sent Events.
-// The wire format is three event kinds:
-//
-//	event: delta   data: {"text":"…"}      // one per text chunk from Claude
-//	event: done    data: {"revision_id":…} // terminal, after persistence
-//	event: error   data: {"error":"…"}     // terminal, on failure
-//
-// Validation and history loading happen before any SSE headers are written,
-// so genuine 4xx/5xx responses can still be returned as plain JSON. Once the
-// stream begins, all errors flow as `error` events instead.
-func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
+// StageRevise validates the request, confirms the draft exists, and stages
+// the prompt in the ticket store. No model call happens here — that's the
+// streaming handler's job. Returning a ticket separately lets the client open
+// a native EventSource (which only supports GET) without having to encode the
+// prompt into the URL.
+func StageRevise(pool *sqlitex.Pool, store *TicketStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		log := zerolog.Ctx(ctx)
@@ -190,14 +206,98 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 			return
 		}
 
-		var req ReviseRequest
+		var req StageRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			log.Error().Err(err).Msg("decode revise body")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if req.Prompt == "" {
 			http.Error(w, "prompt is required", http.StatusBadRequest)
+			return
+		}
+
+		// Confirm the draft exists before issuing a ticket. The streaming
+		// handler also reloads draft + history at consume time, but failing
+		// fast here gives the client a clean 404 before the EventSource opens.
+		conn := pool.Get(ctx)
+		draft, err := orm.FetchOne(conn, domain.GetDraftByID(int64(id)))
+		pool.Put(conn)
+		if err != nil {
+			log.Error().Err(err).Send()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if draft == nil {
+			http.Error(w, "draft not found", http.StatusNotFound)
+			return
+		}
+
+		ticket, err := store.inner.issue(pendingRevision{
+			DraftID: id,
+			Prompt:  req.Prompt,
+			Mode:    req.Mode,
+		})
+		if err != nil {
+			log.Error().Err(err).Msg("issue ticket")
+			http.Error(w, "failed to issue ticket", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(StageResponse{Ticket: ticket})
+	}
+}
+
+// ---------- GET /api/drafts/{id}/revisions/stream ----------
+
+// DonePayload is the body of the terminal `done` SSE event. It carries the
+// metadata the client needs to finalise the streamed turn — the assigned
+// revision id, the resolved mode, and the turn number.
+type DonePayload struct {
+	RevisionID int    `json:"revision_id"`
+	Mode       string `json:"mode"`
+	Turn       int    `json:"turn"`
+}
+
+// StreamRevise consumes a ticket and streams the revision turn as SSE.
+//
+// Wire format:
+//
+//	event: delta    data: {"text":"…"}      // one per text chunk from Claude
+//	event: done     data: {"revision_id":…} // terminal, after persistence
+//	event: failure  data: {"error":"…"}     // terminal, on failure mid-stream
+//
+// Validation (ticket present, draft exists, history loadable) happens before
+// any SSE headers are written, so genuine 4xx/5xx responses come back as
+// plain text errors. Once the stream begins, all errors flow as `failure`
+// events instead.
+func StreamRevise(pool *sqlitex.Pool, ai *anthropic.Client, store *TicketStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		log := zerolog.Ctx(ctx)
+
+		id, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "invalid draft id", http.StatusBadRequest)
+			return
+		}
+
+		ticket := r.URL.Query().Get("ticket")
+		if ticket == "" {
+			http.Error(w, "ticket is required", http.StatusBadRequest)
+			return
+		}
+
+		op, ok := store.inner.consume(ticket)
+		if !ok {
+			// 410 Gone is the right code: the ticket existed at some point,
+			// but it's been consumed or has expired. A stale auto-reconnect
+			// from EventSource lands here and the browser will not retry.
+			http.Error(w, "ticket invalid or expired", http.StatusGone)
+			return
+		}
+		if op.DraftID != id {
+			http.Error(w, "ticket draft mismatch", http.StatusBadRequest)
 			return
 		}
 
@@ -207,7 +307,7 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 			return
 		}
 
-		mode, sysPrompt := resolveSystemPrompt(req.Mode)
+		mode, sysPrompt := resolveSystemPrompt(op.Mode)
 
 		conn := pool.Get(ctx)
 		defer pool.Put(conn)
@@ -231,14 +331,14 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 		}
 
 		// From this point on we commit to SSE. Switch the response into
-		// streaming mode and treat any further error as an `error` event.
+		// streaming mode and treat any further error as a `failure` event.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		messages := buildMessages(draft.Content, history, req.Prompt)
+		messages := buildMessages(draft.Content, history, op.Prompt)
 		stream := ai.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.ModelClaudeHaiku4_5,
 			MaxTokens: 1024,
@@ -253,7 +353,7 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 		for stream.Next() {
 			event := stream.Current()
 			if err := accumulator.Accumulate(event); err != nil {
-				writeSSEError(w, flusher, errors.Wrap(err, "accumulate"))
+				writeSSEFailure(w, flusher, errors.Wrap(err, "accumulate"))
 				return
 			}
 
@@ -267,11 +367,11 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 			}
 		}
 		if err := stream.Err(); err != nil {
-			writeSSEError(w, flusher, errors.Wrap(err, "anthropic stream"))
+			writeSSEFailure(w, flusher, errors.Wrap(err, "anthropic stream"))
 			return
 		}
 		if len(accumulator.Content) == 0 {
-			writeSSEError(w, flusher, errors.New("empty completion from model"))
+			writeSSEFailure(w, flusher, errors.New("empty completion from model"))
 			return
 		}
 
@@ -281,12 +381,12 @@ func Revise(pool *sqlitex.Pool, ai *anthropic.Client) http.HandlerFunc {
 		completion := accumulator.Content[0].Text
 		rows, err := orm.Exec(conn, domain.InsertRevision(&domain.Revision{
 			DraftID:    id,
-			Prompt:     req.Prompt,
+			Prompt:     op.Prompt,
 			Completion: completion,
 			Mode:       mode,
 		}))
 		if err != nil {
-			writeSSEError(w, flusher, errors.Wrap(err, "save revision"))
+			writeSSEFailure(w, flusher, errors.Wrap(err, "save revision"))
 			return
 		}
 
@@ -325,10 +425,11 @@ func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, name string, pay
 	flusher.Flush()
 }
 
-// writeSSEError emits a terminal `error` event. Once this is sent the handler
-// must return — by convention there's nothing useful after it.
-func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	writeSSEEvent(w, flusher, "error", map[string]string{"error": err.Error()})
+// writeSSEFailure emits a terminal `failure` event. The name is deliberately
+// not `error` to avoid colliding with EventSource's built-in connection-error
+// event on the client. Once this is sent the handler must return.
+func writeSSEFailure(w http.ResponseWriter, flusher http.Flusher, err error) {
+	writeSSEEvent(w, flusher, "failure", map[string]string{"error": err.Error()})
 }
 
 // buildMessages reconstructs the conversation for the next turn.

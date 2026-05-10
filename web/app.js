@@ -1,18 +1,18 @@
-// Inkwell frontend — streaming responses (article 5).
+// Inkwell frontend — streaming responses via native EventSource (article 5).
 //
-// State lives in the Alpine component below. Alpine binds it to the DOM
-// declaratively via x-model, x-for, x-text, and @click — no manual DOM
-// queries or element manipulation needed.
+// The revision flow is two requests because the browser's EventSource client
+// only supports GET. Adding a body to a streaming request requires either
+// manual SSE parsing over fetch+ReadableStream, or this two-step protocol —
+// we picked the latter so EventSource itself does the parsing, reconnect, and
+// dev-tools integration for us.
 //
-// app.js registers the component before Alpine initialises (alpine:init fires
-// before Alpine walks the DOM), so the x-data="inkwell" attribute on <body>
-// resolves correctly.
+// 1. POST /api/drafts/{id}/revisions      → { ticket: "<opaque>" }
+// 2. EventSource /api/drafts/{id}/revisions/stream?ticket=<opaque>
+//    emits `delta` events with text chunks, then a terminal `done` event,
+//    or a `failure` event on application errors.
 //
-// The revision endpoint streams Server-Sent Events: each `delta` event carries
-// a chunk of generated text, and a terminal `done` event carries the persisted
-// revision id. We push a placeholder turn into the thread on submit and append
-// to its `completion` as deltas arrive — Alpine re-renders the textnode each
-// tick, producing the live typewriter effect.
+// app.js registers the Alpine component on alpine:init so the x-data="inkwell"
+// binding on <body> resolves before Alpine walks the DOM.
 
 document.addEventListener('alpine:init', () => {
   Alpine.data('inkwell', () => ({
@@ -54,6 +54,9 @@ document.addEventListener('alpine:init', () => {
           this.draftId = draft.draft_id;
         }
 
+        // Stage the revision; receive a one-shot ticket.
+        const { ticket } = await this.stageRevision(this.draftId, prompt, this.mode);
+
         // Push a placeholder turn into the thread so the user sees a target
         // for the streaming text to land in. We update its fields in place
         // as the stream produces deltas — Alpine's reactivity does the rest.
@@ -67,7 +70,8 @@ document.addEventListener('alpine:init', () => {
         this.thread.push(turn);
         this.prompt = '';
 
-        await this.streamRevision(this.draftId, prompt, this.mode, turn);
+        // Open the EventSource and stream into the placeholder turn.
+        await this.streamTicket(this.draftId, ticket, turn);
       } catch (err) {
         this.setStatus(err.message, true);
       } finally {
@@ -93,79 +97,75 @@ document.addEventListener('alpine:init', () => {
       return data;
     },
 
-    // streamRevision opens a streaming POST and mutates `turn` in place as
-    // events arrive. The server emits three event kinds: `delta` carries a
-    // text chunk, `done` carries the persisted metadata, `error` carries a
-    // failure message. The function resolves when the stream closes cleanly
-    // and rejects if any error event is observed.
-    async streamRevision(id, prompt, mode, turn) {
-      const res = await fetch(`/api/drafts/${id}/revisions`, {
+    async stageRevision(id, prompt, mode) {
+      const res  = await fetch(`/api/drafts/${id}/revisions`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ prompt, mode }),
       });
-
-      // 4xx/5xx responses come back as plain JSON before the SSE stream
-      // starts, so we can read them with .json() like any other failure.
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Revision request failed');
+        const text = await res.text().catch(() => '');
+        throw new Error(text.trim() || 'Failed to stage revision');
       }
-
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      // SSE frames are delimited by a blank line (\n\n). We accumulate raw
-      // chunks until we have at least one complete frame, then parse it.
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let idx;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const frame = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          this.handleSSEFrame(frame, turn);
-        }
-      }
-
-      // Trailing data after the last blank line, if any. With a well-behaved
-      // server this is empty — but parse it anyway so a missing final \n\n
-      // doesn't lose the `done` event.
-      if (buffer.trim()) this.handleSSEFrame(buffer, turn);
+      return res.json();
     },
 
-    // handleSSEFrame parses one `event:` / `data:` block and applies it.
-    handleSSEFrame(frame, turn) {
-      let event = 'message';
-      let data  = '';
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) data += line.slice(5).trimStart();
-      }
+    // streamTicket opens an EventSource and updates `turn` in place as events
+    // arrive. Resolves when `done` is observed; rejects on `failure` or any
+    // connection-level error before `done`.
+    streamTicket(id, ticket, turn) {
+      return new Promise((resolve, reject) => {
+        const url = `/api/drafts/${id}/revisions/stream?ticket=${encodeURIComponent(ticket)}`;
+        const es  = new EventSource(url);
+        let settled = false;
 
-      let payload = {};
-      try { payload = data ? JSON.parse(data) : {}; }
-      catch { return; }
-
-      if (event === 'delta') {
-        turn.completion += payload.text || '';
-        // Keep the streaming turn pinned to view as it grows.
-        this.$nextTick(() => {
-          document.getElementById('thread').lastElementChild
-            ?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        // `delta` carries one chunk of generated text. We mutate the turn's
+        // completion in place; Alpine re-renders the textnode each tick.
+        es.addEventListener('delta', (e) => {
+          const { text } = JSON.parse(e.data);
+          turn.completion += text || '';
+          this.$nextTick(() => {
+            document.getElementById('thread').lastElementChild
+              ?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          });
         });
-      } else if (event === 'done') {
-        turn.streaming = false;
-        if (typeof payload.turn === 'number')        turn.turn = payload.turn;
-        if (typeof payload.revision_id === 'number') turn.revisionId = payload.revision_id;
-        if (typeof payload.mode === 'string')        turn.mode = payload.mode;
-      } else if (event === 'error') {
-        turn.streaming = false;
-        throw new Error(payload.error || 'stream error');
-      }
+
+        // `done` is the happy-path terminator. We close the EventSource
+        // synchronously here so the browser doesn't fire its own `error`
+        // when the server closes the connection a moment later.
+        es.addEventListener('done', (e) => {
+          const data = JSON.parse(e.data);
+          turn.streaming = false;
+          if (typeof data.turn === 'number')        turn.turn = data.turn;
+          if (typeof data.revision_id === 'number') turn.revisionId = data.revision_id;
+          if (typeof data.mode === 'string')        turn.mode = data.mode;
+          settled = true;
+          es.close();
+          resolve();
+        });
+
+        // `failure` is the application-level error. Distinct from EventSource's
+        // built-in `error` event so the two can be handled independently.
+        es.addEventListener('failure', (e) => {
+          const data = (() => { try { return JSON.parse(e.data); } catch { return {}; } })();
+          turn.streaming = false;
+          settled = true;
+          es.close();
+          reject(new Error(data.error || 'stream failure'));
+        });
+
+        // Connection-level error — network drop, 4xx/5xx on the GET, or the
+        // server closing without `done`. EventSource auto-reconnects on
+        // generic errors, so we close explicitly to prevent it from looping
+        // against an already-consumed ticket.
+        es.addEventListener('error', () => {
+          if (settled) return; // benign close after `done`/`failure`
+          turn.streaming = false;
+          settled = true;
+          es.close();
+          reject(new Error('connection lost; please retry'));
+        });
+      });
     },
   }));
 });

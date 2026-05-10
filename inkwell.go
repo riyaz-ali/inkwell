@@ -80,9 +80,16 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(stock.RequestID, stock.Recoverer, injectLogger(&logger))
 
+	// Streaming uses a two-step protocol so the browser's native EventSource
+	// (which is GET-only) can be used: POST stages the prompt and returns a
+	// one-shot ticket; GET consumes the ticket and streams Server-Sent Events.
+	tickets := drafts.NewTicketStore()
+	defer tickets.Close()
+
 	r.Method(http.MethodPost, "/api/drafts", drafts.Create(pool))
 	r.Method(http.MethodGet, "/api/drafts/{id}", drafts.Get(pool))
-	r.Method(http.MethodPost, "/api/drafts/{id}/revisions", drafts.Revise(pool, &ai))
+	r.Method(http.MethodPost, "/api/drafts/{id}/revisions", drafts.StageRevise(pool, tickets))
+	r.Method(http.MethodGet, "/api/drafts/{id}/revisions/stream", drafts.StreamRevise(pool, &ai, tickets))
 	r.Handle("/*", http.FileServer(http.Dir(cfg.WebDir)))
 
 	srv := &http.Server{
