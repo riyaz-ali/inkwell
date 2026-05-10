@@ -63,8 +63,8 @@
         <p class="thread-empty" x-show="thread.length === 0">
           Revisions will appear here as you request them…
         </p>
-        <template x-for="turn in thread" :key="turn.turn">
-          <div class="turn">
+        <template x-for="(turn, i) in thread" :key="i">
+          <div class="turn" :class="{ streaming: turn.streaming }">
             <div class="meta">
               <span class="prompt" x-text="`Turn ${turn.turn}: ${turn.prompt}`"></span>
               <span class="mode-badge" x-text="turn.mode"></span>
