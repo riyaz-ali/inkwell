@@ -92,3 +92,15 @@ textarea {
 
 .status { font-size: 0.85rem; color: var(--fg-subtle, #888); min-height: 1.2em; }
 .status.error { color: var(--error, #c33); }
+
+/* Live typewriter cursor while a turn is mid-stream. */
+.turn.streaming .completion::after {
+  content: "▋";
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--accent, #6b8afd);
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  to { visibility: hidden; }
+}
