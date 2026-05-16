@@ -21,4 +21,4 @@ require (
 	golang.org/x/sys v0.34.0 // indirect
 )
 
-replace crawshaw.io/sqlite v0.3.2 => github.com/riyaz-ali/sqlite3 v0.0.0-20260419095645-3149ee2dcca5
+replace crawshaw.io/sqlite v0.3.2 => github.com/riyaz-ali/sqlite3 v0.0.0-20260516143954-99e6c1ebd044
